@@ -1,0 +1,135 @@
+---
+- name: Установка и настройка 3proxy на Debian 12
+  hosts: proxy_servers
+  become: yes
+  become_method: sudo
+  become_user: root
+  become_flags: '-n'
+  vars:
+    proxy3_repo: "https://github.com/z3APA3A/3proxy.git"
+    proxy3_version: "master"  # Можно указать конкретную версию или тег
+    build_dir: "/opt/3proxy"
+    config_source: "./3proxy.cfg"  # Путь к локальному файлу конфигурации
+    config_destination: "/etc/3proxy/3proxy.cfg"
+    systemd_service: "/etc/systemd/system/3proxy.service"
+
+  tasks:
+
+    - name: Обновление кэша apt
+      apt:
+        update_cache: yes
+      register: apt_update
+      tags: update
+
+    - name: Установка необходимых пакетов
+      apt:
+        name:
+          - git
+          - build-essential
+          - libssl-dev
+          - libpcre3-dev
+          - zlib1g-dev
+        state: present
+      register: apt_install
+      tags: dependencies
+
+    - name: Клонирование репозитория 3proxy
+      git:
+        repo: "{{ proxy3_repo }}"
+        version: "{{ proxy3_version }}"
+        dest: "{{ build_dir }}"
+        update: yes
+      register: git_clone
+      tags: source
+
+    - name: Компиляция 3proxy
+      command: make -f Makefile.Linux
+      args:
+        chdir: "{{ build_dir }}"
+      register: make_build
+      tags: build
+
+    - name: Установка 3proxy
+      command: make install -f Makefile.Linux
+      args:
+        chdir: "{{ build_dir }}"
+      register: make_install
+      tags: install
+
+    - name: Создание каталога конфигурации 3proxy
+      file:
+        path: "/etc/3proxy"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: config
+
+    - name: Копирование файла конфигурации 3proxy.cfg
+      copy:
+        src: "{{ config_source }}"
+        dest: "{{ config_destination }}"
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Перезапустить 3proxy
+      tags: config
+
+    - name: Создание systemd сервиса для 3proxy
+      copy:
+        dest: "{{ systemd_service }}"
+        content: |
+          [Unit]
+          Description=3proxy Proxy Server
+          After=network.target
+
+          [Service]
+          Type=simple
+          ExecStart=/usr/local/bin/3proxy /etc/3proxy/3proxy.cfg
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Перезагрузить systemd
+        - Включить и запустить 3proxy
+      tags: systemd
+
+  handlers:
+    - name: Перезапустить 3proxy
+      systemd:
+        name: 3proxy
+        state: restarted
+        enabled: yes
+      tags: handlers
+
+    - name: Перезагрузить systemd
+      command: systemctl daemon-reload
+      tags: handlers
+
+    - name: Включить и запустить 3proxy
+      systemd:
+        name: 3proxy
+        enabled: yes
+        state: started
+      tags: handlers
+
+  # Обработка ошибок и логирование
+  post_tasks:
+    - name: Проверка статуса службы 3proxy
+      systemd:
+        name: 3proxy
+        state: started
+        enabled: yes
+      register: service_status
+      failed_when: service_status.failed
+      tags: verify
+
+    - name: Вывод статуса службы 3proxy
+      debug:
+        msg: "Служба 3proxy успешно запущена и работает."
+      when: service_status.changed == false
+      tags: verify

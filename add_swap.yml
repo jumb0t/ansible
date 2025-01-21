@@ -1,0 +1,66 @@
+---
+- name: Добавление и включение swap на Debian 12
+  hosts: proxy_servers
+  become: yes
+  become_method: sudo
+  become_user: root
+  become_flags: '-n'
+  gather_facts: yes
+  vars:
+    swap_file: /swapfile
+    swap_size: "2G"
+
+  tasks:
+    - name: Проверка наличия swap-файла
+      stat:
+        path: "{{ swap_file }}"
+      register: swapfile_stat
+
+    - name: Создание swap-файла с помощью fallocate
+      command: fallocate -l {{ swap_size }} {{ swap_file }}
+      when: not swapfile_stat.stat.exists
+      register: fallocate_result
+      ignore_errors: yes
+
+    - name: Альтернативное создание swap-файла с помощью dd, если fallocate не удалось
+      command: dd if=/dev/zero of={{ swap_file }} bs=1M count=2048
+      when:
+        - not swapfile_stat.stat.exists
+        - fallocate_result is failed
+      register: dd_result
+      ignore_errors: yes
+
+    - name: Установка прав доступа к swap-файлу
+      file:
+        path: "{{ swap_file }}"
+        owner: root
+        group: root
+        mode: '0600'
+      when: not swapfile_stat.stat.exists
+
+    - name: Настройка swap области
+      command: mkswap {{ swap_file }}
+      when: not swapfile_stat.stat.exists
+
+    - name: Включение swap
+      command: swapon {{ swap_file }}
+      when:
+        - swapfile_stat.stat.exists
+        - ansible_swaptotal_mb == 0
+
+    - name: Добавление swap-файла в /etc/fstab для автоматического включения при загрузке
+      lineinfile:
+        path: /etc/fstab
+        line: "{{ swap_file }} none swap sw 0 0"
+        create: yes
+        state: present
+      when: not swapfile_stat.stat.exists
+
+    - name: Проверка, что swap включён
+      command: swapon --show
+      register: swap_enabled
+      changed_when: false
+
+    - name: Вывод статуса swap
+      debug:
+        msg: "Swap успешно добавлен и включён: {{ swap_enabled.stdout }}"

@@ -1,0 +1,89 @@
+---
+- name: Установка Certbot и получение SSL-сертификата на Debian 12
+  hosts: proxy_servers
+  become: yes
+  become_method: sudo
+  become_user: root
+  become_flags: '-n'
+  gather_facts: yes
+
+  vars:
+    domain: "node1.proxyspace.ydns.eu"
+    certbot_command: >
+      certbot certonly --standalone --preferred-challenges=http
+      -d {{ domain }} --no-eff-email --agree-tos
+      --register-unsafely-without-email --non-interactive
+    cert_path: "/etc/letsencrypt/live/{{ domain }}/fullchain.pem"
+    privkey_path: "/etc/letsencrypt/live/{{ domain }}/privkey.pem"
+
+  tasks:
+    - name: Обновление кэша apt
+      apt:
+        update_cache: yes
+      tags: update
+
+    - name: Установка Certbot и необходимых пакетов
+      apt:
+        name:
+          - certbot
+          - python3-certbot
+        state: present
+      tags: install
+
+    - name: Сбор информации о сервисах
+      service_facts:
+      tags: gather_service_facts
+
+    - name: Получение SSL-сертификата с помощью Certbot
+      block:
+        - name: Остановка nginx для освобождения порта 80
+          service:
+            name: nginx
+            state: stopped
+            enabled: no
+          when: "'nginx' in services and services['nginx'].state == 'running'"
+          tags: prepare
+
+        - name: Получение SSL-сертификата с помощью Certbot
+          command: "{{ certbot_command }}"
+          register: certbot_result
+          args:
+            creates: "{{ cert_path }}"
+          tags: certbot
+
+      rescue:
+        - name: Обработка ошибки получения сертификата
+          debug:
+            msg: "Не удалось получить SSL сертификат для {{ domain }}. Проверьте логи Certbot по пути /var/log/letsencrypt/letsencrypt.log."
+          tags: error
+
+      always:
+        - name: Запуск nginx после получения сертификата
+          service:
+            name: nginx
+            state: started
+            enabled: yes
+          tags: prepare
+
+    - name: Проверка успешного получения сертификата
+      stat:
+        path: "{{ cert_path }}"
+      register: new_cert_stat
+      tags: verify
+
+    - name: Вывод путей к сертификатам
+      debug:
+        msg:
+          - "SSL сертификат успешно получен."
+          - "Путь к полному сертификату: {{ cert_path }}"
+          - "Путь к приватному ключу: {{ privkey_path }}"
+      when: new_cert_stat.stat.exists
+      tags: output
+
+    - name: Обработка случая, когда сертификат не был получен
+      fail:
+        msg: "Не удалось получить SSL сертификат для {{ domain }}."
+      when:
+        - not new_cert_stat.stat.exists
+        - certbot_result.rc != 0
+      tags: verify

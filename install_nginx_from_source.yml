@@ -1,0 +1,220 @@
+---
+- name: Установка и настройка nginx из исходных кодов на Debian 12
+  hosts: proxy_servers
+  become: yes
+  become_method: sudo
+  become_user: root
+  become_flags: '-n'
+  gather_facts: yes
+  vars:
+    nginx_version: "1.27.3"
+    nginx_source_url: "http://nginx.org/download/nginx-{{ nginx_version }}.tar.gz"
+    build_dir: "/opt/nginx-build"
+    install_prefix: "/etc/nginx"
+    nginx_sbin_path: "/usr/sbin/nginx"
+    nginx_conf_path: "/etc/nginx/nginx.conf"
+    nginx_pid_path: "/var/run/nginx.pid"
+    nginx_lock_path: "/var/run/nginx.lock"
+    nginx_error_log: "/var/log/nginx/error.log"
+    nginx_access_log: "/var/log/nginx/access.log"
+    nginx_systemd_service: "/etc/systemd/system/nginx.service"
+
+  tasks:
+    - name: Обновление кэша apt
+      apt:
+        update_cache: yes
+      tags: update
+
+    - name: Установка необходимых пакетов для компиляции nginx
+      apt:
+        name:
+          - build-essential
+          - libpcre3
+          - libpcre3-dev
+          - zlib1g
+          - zlib1g-dev
+          - libssl-dev
+          - wget
+          - curl
+        state: present
+      register: apt_install
+      tags: dependencies
+
+    - name: Создание директории для сборки nginx
+      file:
+        path: "{{ build_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      tags: build
+
+    - name: Скачивание исходных кодов nginx
+      get_url:
+        url: "{{ nginx_source_url }}"
+        dest: "{{ build_dir }}/nginx-{{ nginx_version }}.tar.gz"
+        mode: '0644'
+      tags: source
+
+    - name: Распаковка исходных кодов nginx
+      unarchive:
+        src: "{{ build_dir }}/nginx-{{ nginx_version }}.tar.gz"
+        dest: "{{ build_dir }}"
+        remote_src: yes
+        creates: "{{ build_dir }}/nginx-{{ nginx_version }}"
+      tags: build
+
+    - name: Конфигурация сборки nginx
+      command: >
+        ./configure
+        --prefix={{ install_prefix }}
+        --sbin-path={{ nginx_sbin_path }}
+        --conf-path={{ nginx_conf_path }}
+        --pid-path={{ nginx_pid_path }}
+        --lock-path={{ nginx_lock_path }}
+        --error-log-path={{ nginx_error_log }}
+        --http-log-path={{ nginx_access_log }}
+        --with-http_ssl_module
+        --with-http_v2_module
+        --with-http_gzip_static_module
+        --with-http_stub_status_module
+        --with-stream
+        --without-http_fastcgi_module
+        --without-http_uwsgi_module
+        --without-http_scgi_module
+        --without-mail_pop3_module
+        --without-mail_imap_module
+        --without-mail_smtp_module
+      args:
+        chdir: "{{ build_dir }}/nginx-{{ nginx_version }}"
+      register: configure_result
+      failed_when: configure_result.rc != 0
+      tags: configure
+
+    - name: Компиляция nginx
+      command: make
+      args:
+        chdir: "{{ build_dir }}/nginx-{{ nginx_version }}"
+      register: make_result
+      failed_when: make_result.rc != 0
+      tags: build
+
+    - name: Установка nginx
+      command: make install
+      args:
+        chdir: "{{ build_dir }}/nginx-{{ nginx_version }}"
+      register: make_install_result
+      failed_when: make_install_result.rc != 0
+      tags: install
+
+    - name: Создание необходимых директорий для nginx
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - "/var/log/nginx"
+        - "/var/run"
+      tags: config
+
+    - name: Создание файла конфигурации nginx.conf
+      copy:
+        dest: "{{ nginx_conf_path }}"
+        content: |
+          user  www-data;
+          worker_processes  auto;
+          pid        {{ nginx_pid_path }};
+          include    /etc/nginx/modules-enabled/*.conf;
+
+          events {
+              worker_connections  1024;
+          }
+
+          http {
+              log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+                                '$status $body_bytes_sent "$http_referer" '
+                                '"$http_user_agent" "$http_x_forwarded_for"';
+
+              access_log  {{ nginx_access_log }}  main;
+
+              sendfile            on;
+              tcp_nopush          on;
+              tcp_nodelay         on;
+              keepalive_timeout   65;
+              types_hash_max_size 2048;
+
+              include             /etc/nginx/mime.types;
+              default_type        application/octet-stream;
+
+              include /etc/nginx/conf.d/*.conf;
+              include /etc/nginx/sites-enabled/*;
+          }
+        owner: root
+        group: root
+        mode: '0644'
+      notify: Reload nginx
+      tags: config
+
+    - name: Создание systemd сервиса для nginx
+      copy:
+        dest: "{{ nginx_systemd_service }}"
+        content: |
+          [Unit]
+          Description=The nginx HTTP and reverse proxy server
+          After=network.target remote-fs.target nss-lookup.target
+
+          [Service]
+          Type=forking
+          PIDFile={{ nginx_pid_path }}
+          ExecStartPre={{ nginx_sbin_path }} -t
+          ExecStart={{ nginx_sbin_path }} -c {{ nginx_conf_path }}
+          ExecReload=/bin/kill -s HUP $MAINPID
+          ExecStop=/bin/kill -s QUIT $MAINPID
+          PrivateTmp=true
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Reload systemd
+        - Enable and start nginx
+      tags: systemd
+
+  handlers:
+    - name: Reload systemd
+      command: systemctl daemon-reload
+      when: ansible_os_family == "Debian"
+      tags: handlers
+
+    - name: Enable and start nginx
+      systemd:
+        name: nginx
+        enabled: yes
+        state: started
+      tags: handlers
+
+    - name: Reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+      tags: handlers
+
+  post_tasks:
+    - name: Проверка статуса службы nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+      register: service_status
+      failed_when: service_status.failed
+      tags: verify
+
+    - name: Вывод статуса службы nginx
+      debug:
+        msg: "Служба nginx успешно установлена и запущена."
+      when: service_status.changed == false
+      tags: verify

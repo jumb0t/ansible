@@ -1,0 +1,277 @@
+---
+- name: Настройка VPS на Debian 12
+  hosts: vps
+  become: yes
+  vars:
+    user_name: user
+    user_password_plain: "{{ lookup('password', '/dev/null', 'chars=ascii_letters,digits', length=12) }}"
+    user_password: "{{ user_password_plain | password_hash('sha512') }}"
+    public_key_content: 'ssh-ed25519 -----'  # Замените на ваш публичный ключ
+    hostname: host
+    ansible_ssh_common_args: '-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+    # Параметры sysctl
+    sysctl_settings:
+      # Отключение IPv6
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+      net.ipv6.conf.lo.disable_ipv6: 1
+
+      # Отключение ICMP Echo (Ping)
+      net.ipv4.icmp_echo_ignore_all: 1
+      net.ipv4.icmp_echo_ignore_broadcasts: 1
+      net.ipv4.icmp_ignore_bogus_error_responses: 1
+
+      # Твики для улучшения системы, сети, защиты памяти и процессов
+      net.ipv4.tcp_syncookies: 1
+      net.ipv4.ip_forward: 0
+      net.ipv6.conf.all.forwarding: 0
+      net.ipv4.conf.all.rp_filter: 1
+      net.ipv4.conf.default.rp_filter: 1
+      net.ipv4.conf.all.accept_source_route: 0
+      net.ipv4.conf.default.accept_source_route: 0
+      net.ipv4.conf.all.accept_redirects: 0
+      net.ipv4.conf.default.accept_redirects: 0
+      net.ipv4.conf.all.secure_redirects: 0
+      net.ipv4.conf.default.secure_redirects: 0
+      net.ipv4.conf.all.log_martians: 1
+      net.ipv4.conf.default.log_martians: 1
+
+      # Настройки TCP
+      net.ipv4.tcp_fin_timeout: 15
+      net.ipv4.tcp_tw_reuse: 1
+      net.ipv4.tcp_max_syn_backlog: 2048
+      net.ipv4.tcp_syncookies: 1
+      net.ipv4.tcp_window_scaling: 1
+      net.ipv4.tcp_mtu_probing: 1
+      net.ipv4.tcp_keepalive_time: 600
+      net.core.rmem_default: 262144
+      net.core.wmem_default: 262144
+      net.ipv4.tcp_rmem: '4096 87380 16777216'
+      net.ipv4.tcp_wmem: '4096 65536 16777216'
+      net.core.default_qdisc: fq_codel
+      net.ipv4.tcp_congestion_control: bbr
+      net.ipv4.tcp_ecn: 0
+
+      # Управление виртуальной памятью
+      vm.swappiness: 10
+      vm.overcommit_memory: 1
+      vm.overcommit_ratio: 50
+      vm.min_free_kbytes: 32768
+      vm.dirty_ratio: 10
+      vm.dirty_background_ratio: 5
+      vm.dirty_expire_centisecs: 3000
+      vm.dirty_writeback_centisecs: 1500
+      vm.max_map_count: 65530
+      vm.nr_hugepages: 0
+      vm.vfs_cache_pressure: 50
+      vm.mmap_min_addr: 65536
+
+      # Ограничение числа открытых файлов
+      fs.file-max: 100000
+      fs.inotify.max_user_instances: 512
+      fs.inotify.max_user_watches: 524288
+
+      # Сетевые настройки
+      net.core.rmem_max: 16777216
+      net.core.wmem_max: 16777216
+      net.core.optmem_max: 25165824
+      net.core.netdev_max_backlog: 5000
+      net.core.somaxconn: 65535
+      net.core.netdev_budget: 300
+      net.core.netdev_budget_usecs: 3000
+
+      # Безопасность ядра
+      kernel.randomize_va_space: 2
+      kernel.kptr_restrict: 2
+      kernel.dmesg_restrict: 1
+      kernel.perf_event_paranoid: 3
+      kernel.yama.ptrace_scope: 2
+      kernel.unprivileged_bpf_disabled: 1  # Исправлено на допустимое значение
+      user.max_user_namespaces: 0
+
+      # Настройки планировщика
+      kernel.sched_autogroup_enabled: 0
+
+      # Максимальное количество PID
+      kernel.pid_max: 32768
+
+      # Управление файлами и кешем
+      vm.vfs_cache_pressure: 50
+
+      # Дополнительные параметры безопасности (опционально)
+      # kernel.sysrq: 0  # Отключение системных запросов, если необходимо
+      # kernel.printk_ratelimit: 5
+      # kernel.printk_ratelimit_burst: 10
+
+    # Параметры SSH
+    sshd_settings:
+      Port: 22
+      AddressFamily: any
+      ListenAddress: '0.0.0.0'
+      Protocol: 2
+      PermitRootLogin: 'no'
+      PubkeyAuthentication: 'yes'
+      PasswordAuthentication: 'no'
+      ChallengeResponseAuthentication: 'no'
+      KbdInteractiveAuthentication: 'no'
+      UsePAM: 'yes'
+      PrintMotd: 'no'
+      PrintLastLog: 'yes'
+      TCPKeepAlive: 'yes'
+      UseDNS: 'no'
+      AcceptEnv: 'LANG LC_*'
+      Subsystem: 'sftp /usr/lib/openssh/sftp-server'
+      MaxAuthTries: 3
+      MaxSessions: 10
+      LogLevel: VERBOSE
+      StrictModes: 'yes'
+      Ciphers: 'aes256-ctr,aes192-ctr,aes128-ctr'
+      MACs: 'hmac-sha2-512,hmac-sha2-256'
+      KexAlgorithms: 'curve25519-sha256@libssh.org,diffie-hellman-group-exchange-sha256'
+      HostKeyAlgorithms: 'ssh-rsa,ssh-ed25519'
+      AuthorizedKeysFile: '%h/.ssh/authorized_keys'
+      # Дополнительные настройки
+      IgnoreRhosts: 'yes'
+      HostbasedAuthentication: 'no'
+      IgnoreUserKnownHosts: 'no'
+      PermitEmptyPasswords: 'no'
+      AllowAgentForwarding: 'no'
+      AllowTcpForwarding: 'no'
+      X11Forwarding: 'no'
+      #Include: '/etc/ssh/sshd_config.d/*.conf'
+
+  tasks:
+    # Обновление системы
+    - name: Обновить кэш apt и обновить все пакеты
+      apt:
+        update_cache: yes
+        upgrade: dist
+      register: apt_update
+      retries: 3
+      delay: 10
+      until: apt_update is succeeded
+
+    # Установка необходимых пакетов
+    - name: Установить необходимые пакеты
+      apt:
+        name:
+          - lsof
+          - strace
+          - htop
+          - sudo
+          - net-tools
+          - dnsutils
+          - nftables
+          - nginx
+          - tmux
+          - tcpdump
+          - golang
+          - build-essential
+          - tuned
+          - sshpass
+          - autossh
+        state: present
+      register: install_packages
+      retries: 3
+      delay: 10
+      until: install_packages is succeeded
+
+    # Включение и настройка tuned
+    - name: Включить и запустить службу tuned
+      systemd:
+        name: tuned
+        enabled: yes
+        state: started
+
+    # Проверка текущего активного профиля tuned
+    - name: Проверить текущий активный профиль tuned
+      command: tuned-adm active
+      register: tuned_active
+
+    # Установка профиля throughput-performance, если требуется
+    - name: Установить профиль throughput-performance, если требуется
+      command: tuned-adm profile throughput-performance
+      when: "'Current active profile: throughput-performance' not in tuned_active.stdout"
+      changed_when: true
+
+    # Отключение службы cron
+    - name: Остановить и отключить службу cron
+      systemd:
+        name: cron
+        enabled: no
+        state: stopped
+
+    # Настройка sysctl параметров
+    - name: Настроить параметры sysctl
+      sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: yes
+      loop: "{{ sysctl_settings | dict2items }}"
+      notify:
+        - Apply sysctl settings
+
+    # Настройка SSH конфигурации без перезапуска службы
+    - name: Обновить конфигурацию SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^{{ item.key }}'
+        line: '{{ item.key }} {{ item.value }}'
+        state: present
+        create: yes
+        backup: yes
+      loop: "{{ sshd_settings | dict2items }}"
+
+    # Создание пользователя с sudo доступом
+    - name: Создать пользователя "{{ user_name }}"
+      user:
+        name: "{{ user_name }}"
+        password: "{{ user_password }}"
+        update_password: on_create
+        groups: sudo
+        shell: /bin/bash
+        create_home: yes
+      # no_log: true  # Удалено для отладки
+
+    # Настройка SSH для нового пользователя
+    - name: Создать директорию .ssh
+      file:
+        path: "/home/{{ user_name }}/.ssh"
+        state: directory
+        owner: "{{ user_name }}"
+        group: "{{ user_name }}"
+        mode: '0700'
+
+    - name: Добавить публичный ключ в authorized_keys
+      copy:
+        content: "{{ public_key_content }}"
+        dest: "/home/{{ user_name }}/.ssh/authorized_keys"
+        owner: "{{ user_name }}"
+        group: "{{ user_name }}"
+        mode: '0600'
+
+    # Установка имени хоста и обновление /etc/hosts
+    - name: Установить имя хоста
+      hostname:
+        name: "{{ hostname }}"
+
+    - name: Обновить файл /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s+.*$'
+        line: "127.0.1.1\t{{ hostname }}"
+        state: present
+
+    # Вывод сгенерированного пароля
+    - name: Вывести сгенерированный пароль пользователя
+      debug:
+        msg: "Пароль для пользователя {{ user_name }}: {{ user_password_plain }}"
+      no_log: false
+
+  handlers:
+    - name: Apply sysctl settings
+      command: sysctl -p
+      register: sysctl_apply
+      failed_when: sysctl_apply.rc != 0
